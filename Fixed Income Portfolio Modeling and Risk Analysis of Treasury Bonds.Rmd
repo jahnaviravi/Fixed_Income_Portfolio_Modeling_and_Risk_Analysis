@@ -1,0 +1,215 @@
+---
+title: "FE 535 - Project 2 - Question 1"
+author: "Jahnavi Ravi"
+date: "`r Sys.Date()`"
+output:
+  word_document: default
+  html_document: default
+---
+```{r}
+# Loading required libraries:
+library(xts)
+library(zoo)
+library(timetk)
+library(quantmod)
+library(tidyquant)
+library(tidyverse)
+library(dplyr)
+library(showtext)
+library(png)
+library(grid)
+library(nleqslv)
+library(rootSolve)
+
+font_add(family = "Arial", regular = "Arial.ttf")
+showtext.auto()
+```
+
+# Bond Portfolio Management (30 Points)
+
+## The file bonds.csv contains Treasury bond data, which was hand-collected using different dates over the last few years from https://www.bloomberg.com/markets. Given this data, address the following questions:
+
+### 2. Use the pricing equation of a fixed-coupon bond to price each bond from the bonds.csv file. I recommend writing a function that takes yield, coupon, face value, and maturity as its main arguments. The resulting prices should correspond to the ones reported in the data. Hence, you should plot the computed prices against the given ones. To confirm, make sure you observe a 45-degree line. (5 Points)
+
+```{r}
+# Function to calculate bond prices
+calculate_bond_price <- function(yield, coupon, face_value, maturity) {
+  ytm_decimal <- yield / 100  # Convert yield to decimal
+  
+  # Calculate bond price using the pricing equation
+  price <- (coupon * (1 - (1 + ytm_decimal)^(-maturity)) / ytm_decimal) + 
+    (face_value / (1 + ytm_decimal)^maturity)
+  
+  return(price)
+}
+ 
+# Load the bonds.csv file
+bonds_data <- read.csv("/Users/work/Desktop/FE 535 - Project 2/bonds.csv")
+
+# Empty list to store results
+bond_prices_list <- list()
+
+# Calculate and store bond prices for each bond
+for (i in seq(nrow(bonds_data))) {
+  bond <- bonds_data[i, ]
+  computed_price <- calculate_bond_price(bond$Yield, bond$Coupon, 100, 
+                                         bond$Maturity)
+  
+  # Store the result directly without checking for missing values
+  bond_prices_list[[i]] <- data.frame(Bond_Number = bond$Bond.Number,
+                                       Given_Price = bond$Price,
+                                       Computed_Price = computed_price)
+}
+
+# Combine to create a df
+bond_prices <- data.frame(do.call(rbind, bond_prices_list))
+print(bond_prices)
+
+# Plot
+ggplot(bond_prices, aes(x = Given_Price, y = Computed_Price, label = Bond_Number)) +
+  geom_point(size = 3, color = "blue", alpha = 0.7) +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "red") +
+  labs(title = "Computed vs Given Bond Prices",
+       x = "Given Prices ($)",
+       y = "Computed Prices ($)") +
+  theme_minimal() +
+  theme(legend.position = "none", plot.title = element_text(hjust = 0.5)) +
+  geom_text(aes(label = Bond_Number), color = "darkgreen", size = 3)
+```
+
+### 3. Prices should reflect investors’ perception of future interest rates. Rather than computing the prices using yields as the case in the previous question, in practice, it is the other way around. We try to deduce yields from market prices. Hence, given a pricing function, you need to find the yield that matches the market price. For each bond, find the implied yield and plot it against the corresponding yield from the bonds.csv data. Again, this should result in a 45-degree line. (5 Points)
+
+```{r}
+# Vector to store yields
+yield <- c()
+for (x in bonds_data$Bond.Number) {
+  cash_flow <- c(-(bonds_data$Price[x]), 
+                  c(rep(100 * bonds_data$Coupon[x]/100, bonds_data$Maturity[x] - 1), 
+                    100 * (1 + bonds_data$Coupon[x]/100)))
+
+  a_val <- function(i, cash_flow, t = seq_along(cash_flow)) {
+    sum(cash_flow / (1 + i)^t)
+  }
+  
+  ytm <- function(cash_flow) {
+    uniroot(a_val, c(0, 1), cash_flow = cash_flow)$root
+  }
+  
+  yield[x] <- ytm(cash_flow)
+}
+
+# Df to store the results
+yield_df <- data.frame(Bond_Number = bonds_data$Bond.Number,
+                       Given_Yield = bonds_data$Yield,
+                       Computed_Yield = yield*100)
+
+print(yield_df)
+
+# Plot
+ggplot(yield_df, aes(x = Given_Yield, y = Computed_Yield, label = Bond_Number)) +
+  geom_point(size = 3, color = "blue", alpha = 0.7) +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "red") +
+  labs(title = "Computed vs Given Yields",
+       x = "Given Yields (%)",
+       y = "Computed Yields (%)") +
+  theme_minimal() +
+  theme(legend.position = "none", plot.title = element_text(hjust = 0.5)) +
+  geom_text(color = "darkgreen", size = 3)
+```
+
+### 4. Compute and report the Macaulay duration for each bond in the bonds.csv data file. This should correspond to 24 numbers. As a summary, report the min and max for each duration by maturity. Your summary should correspond to 4 × 2 table, where each row corresponds to a distinct maturity and columns correspond to statistics (i.e., min and max). How do the results compare within columns? What about within rows? Provide some rationale. (5 Points)
+
+```{r}
+bonds_data$Macaulay_Duration <- mapply(function(yield, coupon, face_value, maturity) {
+  dt <- seq(1, maturity, by = 1)
+  duration <- sum(dt * coupon / (1 + yield/100)^dt) + maturity * face_value / (1 + yield/100)^maturity
+  return(duration)
+}, bonds_data$Yield, bonds_data$Coupon, 100, bonds_data$Maturity)
+
+# Convert durations to years
+bonds_data$Macaulay_Duration <- bonds_data$Macaulay_Duration / 100
+mac_duration_df <- data.frame(Bond_Number = bonds_data$Bond.Number,
+                              Macaulay_Duration = bonds_data$Macaulay_Duration)
+print(mac_duration_df)
+
+# Summary table
+summary_table <- bonds_data %>%
+  group_by(Maturity) %>%
+  summarise(min_duration = min(Macaulay_Duration), max_duration = max(Macaulay_Duration))
+
+print(summary_table)
+```
+
+### 5. Using first order Taylor expansion, calculate the change in the Treasury bond prices, if the yield curve in the US shifts up by 50 bps. Focus only on the recent bond data to answer this part, i.e. bonds numbered 21, 22, 23, and 24. To summarize, plot both the original and new prices against maturity. How do you justify this observation? (5 Points) Note: since you have a pricing function for a fixed coupon bond, you should confirm whether the new price is correct. For instance, if the price P is a function of yield y, then we know that price is P = f(y). To check whether your answer is correct, you should compare your Taylor expansion results with the exact price, which would be P1 = f(y + delta y).
+
+```{r}
+# Extract data for bonds 21, 22, 23, and 24
+recent_bonds <- bonds_data[21:24, ]
+
+# Function to calculate bond price using the fixed-coupon bond pricing equation
+price_fixed_coupon_bond <- function(yield, coupon, face_value, maturity) {
+  price = (coupon * face_value) / yield * (1 - (1 + yield)^(-maturity)) + face_value / (1 + yield)^maturity
+  return(price)
+}
+
+# Calculate the original prices
+original_prices <- mapply(
+  price_fixed_coupon_bond,
+  yield = recent_bonds$Yield / 100,
+  coupon = recent_bonds$Coupon / 100,
+  face_value = 100,
+  maturity = recent_bonds$Maturity
+)
+
+# Specify the change in yield (50 bps)
+delta_yield <- 0.005  # 50 bps = 0.5%
+
+# Calculate the change in prices using the first-order Taylor expansion
+delta_prices <- -mapply(
+  function(yield, coupon, face_value, maturity) {
+    derivative = (coupon * face_value) / (yield^2) * (1 - (1 + yield)^(-maturity)) +
+                 maturity * face_value / (1 + yield)^(maturity + 1)
+    return(derivative * delta_yield)
+  },
+  yield = recent_bonds$Yield / 100,
+  coupon = recent_bonds$Coupon / 100,
+  face_value = 100,  # Assuming face value is 100 for simplicity
+  maturity = recent_bonds$Maturity
+)
+
+# Calculate the new prices using the Taylor expansion results
+new_prices <- original_prices + delta_prices
+
+# Create a dataframe for plotting
+plot_data <- data.frame(
+  Maturity = recent_bonds$Maturity,
+  Original_Price = original_prices,
+  New_Price = new_prices
+)
+
+plot_data
+
+# Plot original and new prices against maturity
+plot(
+  plot_data$Maturity,
+  plot_data$Original_Price,
+  type = "o",
+  col = "blue",
+  pch = 16,
+  ylim = c(min(plot_data$Original_Price, plot_data$New_Price), max(plot_data$Original_Price, plot_data$New_Price)),
+  xlab = "Maturity",
+  ylab = "Bond Price",
+  main = "Original and New Prices vs. Maturity"
+)
+
+points(
+  plot_data$Maturity,
+  plot_data$New_Price,
+  type = "o",
+  col = "red",
+  pch = 16
+)
+
+# Add legend
+legend("topright", legend = c("Original Price", "New Price"), col = c("blue", "red"), pch = 16)
+```
